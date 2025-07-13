@@ -1,0 +1,181 @@
+//////////////////////////////////////////
+// 01. NO2 Mapping - Sentinel-5P (2020–2024)
+//////////////////////////////////////////
+
+// Step 1: Define Area of Interest (AOI)
+Map.centerObject(ROI, 6);
+Map.addLayer(ROI, {}, 'Study Area');
+
+// Step 2: Load NO2 datasets by phase (pre, during, post lockdowns)
+var collection_pre_lockdown = ee.ImageCollection('COPERNICUS/S5P/NRTI/L3_NO2')
+  .select('NO2_column_number_density')
+  .filterDate('2020-01-24', '2020-02-14');
+
+var collection_during_lockdown = ee.ImageCollection('COPERNICUS/S5P/NRTI/L3_NO2')
+  .select('NO2_column_number_density')
+  .filterDate('2020-03-24', '2020-04-14');
+
+var collection_post_lockdown = ee.ImageCollection('COPERNICUS/S5P/NRTI/L3_NO2')
+  .select('NO2_column_number_density')
+  .filterDate('2022-01-24', '2022-02-14');
+
+var collection_post_lockdown2 = ee.ImageCollection('COPERNICUS/S5P/NRTI/L3_NO2')
+  .select('NO2_column_number_density')
+  .filterDate('2024-01-24', '2024-02-14');
+
+// Step 3: Visualization Parameters
+var band_viz_no2 = {
+  min: 0,
+  max: 0.0002,
+  opacity: 0.90,
+  palette: ['black', 'blue', 'purple', 'cyan', 'green', 'yellow', 'red']
+};
+
+// Step 4: Map Layers
+Map.addLayer(collection_pre_lockdown.mean().clip(ROI), band_viz_no2, 'NO2 Pre-Lockdown');
+Map.addLayer(collection_during_lockdown.mean().clip(ROI), band_viz_no2, 'NO2 During-Lockdown');
+Map.addLayer(collection_post_lockdown.mean().clip(ROI), band_viz_no2, 'NO2 Post-Lockdown');
+Map.addLayer(collection_post_lockdown2.mean().clip(ROI), band_viz_no2, 'NO2 Post-Lockdown2');
+
+// Step 5: Export NO2 Maps
+function exportImageToDrive(image, name) {
+  Export.image.toDrive({
+    image: image,
+    description: name,
+    scale: 30,
+    region: ROI,
+    fileFormat: 'GeoTIFF',
+    crs: 'EPSG:4326'
+  });
+}
+
+exportImageToDrive(collection_pre_lockdown.mean().clip(ROI), 'NO2_Pre_Lockdown');
+exportImageToDrive(collection_during_lockdown.mean().clip(ROI), 'NO2_Lockdown');
+exportImageToDrive(collection_post_lockdown.mean().clip(ROI), 'NO2_Post_Lockdown');
+exportImageToDrive(collection_post_lockdown2.mean().clip(ROI), 'NO2_Post_Lockdown2');
+
+////////////////////////////////////////////
+// 02. Carbon Storage Mapping - MODIS NPP
+////////////////////////////////////////////
+
+Map.centerObject(myRegion, 9);
+Map.addLayer(myRegion, {}, 'Carbon Region');
+
+var startDate = ee.Date.fromYMD(2022, 1, 1);
+var endDate = ee.Date.fromYMD(2022, 12, 31);
+
+var nppcollection = npp.filterDate(startDate, endDate)
+  .filterBounds(myRegion)
+  .select("Npp");
+
+var gppcollection = gpp.filterDate(startDate, endDate)
+  .filterBounds(myRegion)
+  .select("Gpp");
+
+var myNPP = function(myimg){
+  var year = ee.Date(myimg.get('system:time_start')).get('year').toInt();
+  var GPPy = gppcollection.filter(ee.Filter.calendarRange(year, year, 'year')).sum();
+  var NPPy = nppcollection.filter(ee.Filter.calendarRange(year, year, 'year')).sum();
+
+  var npp8 = myimg.expression('(GGP8/GPPy * NPPy)', {
+    GGP8: myimg,
+    GPPy: GPPy,
+    NPPy: NPPy
+  });
+  return npp8.copyProperties(myimg, ['system:time_start']);
+};
+
+var npp8collection = ee.ImageCollection(gppcollection.map(myNPP));
+var npp_viz = {min: 0.0, max: 300, palette: 'ff0000,f0ff00,004717'};
+var nppImage = npp8collection.mean().clip(myRegion);
+Map.addLayer(nppImage, npp_viz, 'MODIS NPP');
+
+Export.image.toDrive({
+  image: nppImage,
+  description: 'Carbon_Storage_2022',
+  scale: 30,
+  region: myRegion.geometry(),
+  maxPixels: 1e13
+});
+
+////////////////////////////////////////
+// 03. CO Mapping - Sentinel-5P (2019-21)
+////////////////////////////////////////
+
+var collection_pre_co = ee.ImageCollection("COPERNICUS/S5P/NRTI/L3_CO")
+  .select('CO_column_number_density')
+  .filterDate('2019-01-01', '2020-03-01');
+
+var collection_during_co = ee.ImageCollection("COPERNICUS/S5P/NRTI/L3_CO")
+  .select('CO_column_number_density')
+  .filterDate('2020-03-01', '2020-08-31');
+
+var collection_post_co = ee.ImageCollection("COPERNICUS/S5P/NRTI/L3_CO")
+  .select('CO_column_number_density')
+  .filterDate('2020-08-31', '2021-08-30');
+
+var band_viz_co = {
+  min: 0,
+  max: 0.05,
+  opacity: 0.90,
+  palette: ['black', 'blue', 'purple', 'cyan', 'green', 'yellow', 'red']
+};
+
+Map.addLayer(collection_pre_co.mean().clip(nbi), band_viz_co, 'CO Pre-Lockdown');
+Map.addLayer(collection_during_co.mean().clip(nbi), band_viz_co, 'CO During-Lockdown');
+Map.addLayer(collection_post_co.mean().clip(nbi), band_viz_co, 'CO Post-Lockdown');
+
+////////////////////////////////////////
+// 04. Methane Mapping - Sentinel-5P (2020–2024)
+////////////////////////////////////////
+
+Map.centerObject(roi);
+Map.addLayer(roi);
+
+var sen5 = ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_CH4")
+  .select(['CH4_column_volume_mixing_ratio_dry_air'], ['methane'])
+  .filterDate('2020-01-01', '2024-12-31')
+  .filterBounds(roi);
+
+var year_list = ee.List.sequence(2020, 2023);
+var month_list = ee.List.sequence(1, 12);
+
+var methane_monthly = ee.ImageCollection(year_list.map(function(year){
+  return month_list.map(function(month){
+    var monthly = sen5.filter(ee.Filter.calendarRange(year, year, 'year'))
+                      .filter(ee.Filter.calendarRange(month, month, 'month')).mean();
+    var date = ee.Date.fromYMD(year, month, 1);
+    return monthly.set('system:time_start', date.millis())
+                  .set('system:index', date.format('YYYY-MM-dd'));
+  });
+}).flatten());
+
+var ave = methane_monthly.mean();
+Map.addLayer(ave.clip(roi), {
+  min: 1750,
+  max: 1900,
+  palette: ['black', 'blue', 'purple', 'cyan', 'green', 'yellow', 'red']
+}, 'CH4 Mean');
+
+var anomaly = methane_monthly.map(function(img){
+  return img.subtract(ave).rename('anomaly')
+            .copyProperties(img, img.propertyNames());
+});
+
+var pos_anomaly = anomaly.map(function(img){
+  var val = ee.Number(img.reduceRegion({reducer: ee.Reducer.mean(), geometry: roi, scale: 7000}).values().get(0));
+  return img.set('methane_value', val);
+}).filter(ee.Filter.gt('methane_value', 0));
+
+var trend = methane_monthly.reduce(ee.Reducer.kendallsCorrelation());
+Map.addLayer(trend.select('methane_tau').clip(roi), {palette: ['green','black','red']}, 'CH4 Trend');
+
+Export.image.toDrive({
+  image: pos_anomaly.toBands().clip(roi),
+  description: 'Nairobi_Metro_Methane_Anomaly',
+  region: roi,
+  scale: 7000,
+  maxPixels: 1e13,
+  folder: 'test',
+  crs: 'EPSG:4326'
+});
