@@ -1,0 +1,119 @@
+// Step 1: Load Area of Interest (AOI)
+var aoi = ee.FeatureCollection("users/jameswaichoka9/nairobi_metro");
+// ✅ Reason: Defines the spatial extent of the analysis — all computations will be clipped to this region (Nairobi Metro).
+
+// Step 2: Center the map
+Map.centerObject(aoi, 10);
+// ✅ Reason: Zooms and centers the map view on the AOI for easier visual inspection.
+
+// Step 3: Load elevation data and derive slope and aspect
+var dataset = ee.Image('USGS/SRTMGL1_003'); 
+var elevation = dataset.select('elevation');
+// ✅ Reason: Elevation data is needed to calculate slope and aspect, which affect solar radiation on terrain.
+
+var slope = ee.Terrain.slope(elevation);
+var aspect = ee.Terrain.aspect(elevation).updateMask(slope.gt(5));
+// ✅ Reason: Steepness (slope) and direction (aspect) influence how much sunlight hits a surface. We mask out flat areas (slope ≤ 5°) where aspect isn’t meaningful.
+
+// Step 4: Classify north- and south-facing slopes (optional)
+var N_aspect = aspect.updateMask(aspect.gt(0).and(aspect.lte(45)).or(aspect.gt(315).and(aspect.lte(360))));
+var S_aspect = aspect.updateMask(aspect.gt(135).and(aspect.lte(225)));
+var NS_aspect = ee.ImageCollection([N_aspect, S_aspect]).mosaic();
+// ✅ Reason: These masks can help distinguish terrain types for further analysis (e.g., vegetation or solar suitability by slope direction).
+
+// Step 5: Extract latitude from image
+var latitude = ee.Image.pixelLonLat().select('latitude').clip(aoi);
+// ✅ Reason: Latitude affects solar position; it is essential for computing solar angles at any location.
+
+// Step 6: Define a helper function to convert degrees to radians
+function toRadians(degrees) {
+  return degrees.multiply(Math.PI / 180);
+}
+// ✅ Reason: Many trigonometric operations in solar geometry require radians rather than degrees.
+
+// Step 7: Convert latitude to radians
+var latitudeRad = toRadians(latitude);
+// ✅ Reason: Prepares latitude for use in angle-based calculations like solar declination and incidence.
+
+// Step 8: Define solar constant (irradiance in W/m² at Earth's outer atmosphere)
+var solarConstant = 1361;
+// ✅ Reason: This constant is used to estimate the theoretical maximum solar radiation received per unit area.
+
+// Step 9: Define time range (1 day) and time step (10 minutes)
+var startDate = ee.Date('2022-06-01');
+var endDate = ee.Date('2022-06-02');
+var intervalMinutes = 10;
+var aggregationInterval = ee.Number(intervalMinutes).multiply(60).multiply(1000);
+// ✅ Reason: Breaking the day into small time intervals (10 minutes) improves temporal accuracy of the radiation estimate.
+
+// Step 10: Generate time steps (list of timestamps every 10 minutes)
+var dateSequence = ee.List.sequence(startDate.millis(), endDate.millis(), aggregationInterval)
+  .map(function(dateMillis) {
+    return ee.Date(dateMillis);
+  });
+// ✅ Reason: Creates a time series for calculating radiation at each point in the day.
+
+// Step 11: Calculate direct solar radiation for each time step
+var directRadiationPer10Min = ee.ImageCollection.fromImages(
+  dateSequence.map(function(date) {
+    var startTime = ee.Date(date);
+    var dayOfYear = startTime.getRelative('day', 'year');
+    
+    var slopeRad = toRadians(slope);
+    var aspectRad = toRadians(aspect);
+    var hourAngleRad = toRadians(ee.Number(15).multiply(startTime.getRelative('hour', 'day').subtract(12)));
+    // ✅ Reason: Hour angle helps position the sun in the sky relative to local solar noon.
+
+    var declination = toRadians(
+      ee.Number(23.45).multiply(
+        ee.Number(360).divide(365).multiply(dayOfYear.add(284)).sin()
+      )
+    );
+    declination = ee.Image.constant(declination);
+    // ✅ Reason: Declination is the tilt of Earth’s axis; it varies daily and affects solar incidence.
+
+    // Compute cosine of the angle of incidence between sun rays and slope surface
+    var cosincident =
+      (latitudeRad.sin().multiply(hourAngleRad.cos()).multiply(aspectRad.cos()).multiply(slopeRad.sin()).multiply(-1))
+        .subtract(aspectRad.sin().multiply(hourAngleRad.sin()).multiply(slopeRad.sin()))
+        .add(latitudeRad.cos().multiply(hourAngleRad.cos()).multiply(slopeRad.cos()))
+        .multiply(declination.cos())
+        .add(latitudeRad.cos().multiply(aspectRad.cos()).multiply(slopeRad.sin())
+        .add(latitudeRad.sin().multiply(slopeRad.cos())))
+        .multiply(declination.sin());
+    // ✅ Reason: This equation estimates the proportion of sunlight directly hitting a sloped surface.
+
+    var Gd = cosincident.multiply(solarConstant);
+    // ✅ Reason: Converts cosine of solar incidence angle into actual radiation (W/m²) by multiplying with the solar constant.
+
+    return Gd.set('system:time_start', startTime.millis());
+  })
+).sort('system:time_start');
+// ✅ Reason: This builds an image collection of direct radiation snapshots every 10 minutes.
+
+// Step 12: Compute the mean radiation for the entire day
+var dailyMeanRadiation = directRadiationPer10Min.mean()
+  .clip(aoi)
+  .rename('mean_direct_radiation');
+// ✅ Reason: Aggregates the 10-minute radiation values into a daily average for each pixel.
+
+// Step 13: Display the daily mean radiation on the map
+Map.addLayer(dailyMeanRadiation, {
+  min: 0,
+  max: 1000,
+  palette: ['blue', 'green', 'yellow', 'red']
+}, 'Mean Direct Radiation');
+// ✅ Reason: Helps visually interpret where terrain receives more or less solar energy.
+
+// Step 14: Export the daily mean solar radiation image as GeoTIFF
+Export.image.toDrive({
+  image: dailyMeanRadiation,
+  description: 'Mean_Direct_Solar_Radiation',
+  folder: 'GEE_Exports',  // Optional folder in your Google Drive
+  fileNamePrefix: 'direct_radiation_nairobi_2022_06_01',
+  region: aoi.geometry(),
+  scale: 30,  // Resolution in meters
+  maxPixels: 1e13,
+  fileFormat: 'GeoTIFF'
+});
+// ✅ Reason: Saves the computed radiation map for offline analysis or use in GIS tools like QGIS or ArcGIS.
