@@ -1,0 +1,59 @@
+// Step 1: Add Nairobi Metropolitan Region boundary to the map
+Map.addLayer(roi, {}, 'Nairobi Metropolitan Region'); 
+// Reason: Visualize the region of interest (ROI) on the map for spatial reference.
+
+// Step 2: Center the map view on the ROI
+Map.centerObject(roi, 7);
+// Reason: Automatically zoom and center the map to Nairobi Metro Region to improve user experience.
+
+// Step 3: Load ECMWF ERA5-Land monthly aggregated dataset and filter it to year 2020
+var sentinel5 = ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY_AGGR")
+  .filterDate('2020-01-01', '2020-12-30')  // Filter to only 2020 data
+  .mean()                                  // Take the average over the year
+  .clip(roi);                              // Clip to the region of interest
+// Reason: Prepares a single mean image of wind components for the year 2020 specific to Nairobi Metro region.
+
+// Step 4: Compute wind speed using the Pythagorean theorem
+var wind = sentinel5.expression('(u**2 + v**2)**0.5', {
+  'u': sentinel5.select('u_component_of_wind_10m'),
+  'v': sentinel5.select('v_component_of_wind_10m'),
+});
+// Reason: Wind speed at 10m height is derived from its u (east-west) and v (north-south) vector components.
+
+// Step 5: Define visualization parameters for wind speed
+var rgbvis = {
+  min: 0,
+  max: 2.4,
+  palette: ['green', 'yellow', 'red']
+};
+// Reason: Set color scheme and value range for intuitive visualization of wind speed on the map.
+
+// Step 6: Add computed wind speed layer to the map
+Map.addLayer(wind, rgbvis, 'Wind Speed');
+// Reason: Visualize the spatial distribution of average wind speed over Nairobi Metro region.
+
+// Step 7: Define a function to compute wind speed band for each monthly image
+var wind_chart = function(img) {
+  var wind = img.expression('(u**2 + v**2)**0.5', {
+    'u': img.select('u_component_of_wind_10m'),
+    'v': img.select('v_component_of_wind_10m'),
+  }).rename('velocity'); // Rename the new band for easier access
+  return img.addBands(wind); // Add wind speed band to the image
+};
+// Reason: Prepares the dataset for time-series analysis by computing wind speed per month.
+
+// Step 8: Load the same image collection again for monthly wind speed time-series analysis
+var collection = ee.ImageCollection("ECMWF/ERA5_LAND/MONTHLY_AGGR")
+  .filterDate('2020-01-01', '2020-12-30')
+  .map(wind_chart); // Apply the wind speed calculation function to each monthly image
+// Reason: Create a time series of monthly wind speeds over 2020 for charting.
+
+// Step 9: Generate and print a time series chart of mean wind speed over ROI
+var Chart = ui.Chart.image.series({
+  imageCollection: collection.select('velocity'),
+  region: roi,
+  reducer: ee.Reducer.mean(),
+  xProperty: 'system:time_start'
+});
+print(Chart);
+// Reason: Plot how the average wind speed changes over time (monthly) in the region of interest.
