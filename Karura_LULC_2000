@@ -1,0 +1,158 @@
+var geometry = ee.FeatureCollection('projects/ee-jameswaichoka9/assets/Karura_Forest_Boundary');
+Map.addLayer(geometry, {}, 'Karura Forest Boundary');
+Map.centerObject(geometry, 15);
+
+// Load Landsat 7 TOA data
+var l7raw = ee.ImageCollection("LANDSAT/LE07/C02/T1_TOA");
+
+// Function to mask clouds using pixel_qa for Landsat 7
+function maskL7sr(image) {
+  var qa = image.select('QA_PIXEL');
+  var cloudShadowBitMask = (1 << 3);
+  var cloudsBitMask = (1 << 5);
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+              .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return image.updateMask(mask);
+}
+
+// Filter, mask, and composite
+var image = l7raw
+  .filterBounds(geometry)
+  .filterDate('2000-01-01', '2000-05-31')
+  .map(maskL7sr)
+  .median()
+  .clip(geometry);
+
+// Landsat 7 bands: B3 (red), B2 (green), B4 (NIR)
+var trueColorVis = {min: 0.05, max: 0.3, bands: ['B4', 'B3', 'B2']};
+Map.addLayer(image, trueColorVis, 'True Color Composite');
+
+// Classification parameters
+var label = "Class";
+var bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B7'];
+var input = image.select(bands);
+
+// Merge training data for 6 classes
+// 1=Indigenous Forest, 2=Exotic Forest, 3=Mixed vegetation, 4=Wetland, 5=Open space, 6=Built-up
+var training = Indigenous_Forest
+  .merge(Exotic_Forest)
+  .merge(Mixed_Vegetation)
+  .merge(Wetland)
+  .merge(Open_Space)
+  .merge(Built_up);
+
+// Overlay the points on the Landsat image
+var trainImage = input.sampleRegions({
+  collection: training,
+  properties: [label],
+  scale: 30
+});
+
+// Split into training and testing sets
+var trainingData = trainImage.randomColumn();
+var trainSet = trainingData.filter(ee.Filter.lessThan('random', 0.8));
+var testSet = trainingData.filter(ee.Filter.greaterThanOrEquals('random', 0.8));
+
+// Train classifier (CART)
+var classifier = ee.Classifier.smileCart().train(trainSet, label, bands);
+
+// Classify the image
+var classified = input.classify(classifier);
+
+// Define visualization
+var landcoverPalette = [
+  '#006400', // Indigenous Forest
+  '#228B22', // Exotic Forest
+  '#7FFF00', // Mixed vegetation
+  '#483D8B', // Wetland
+  '#DAA520', // Open space
+  '#B22222'  // Built-up
+];
+Map.addLayer(classified.clip(geometry), {palette: landcoverPalette, min: 1, max: 6}, 'LULC Classification');
+
+// ================= LEGEND =================
+var legend = ui.Panel({
+  style: {position: 'bottom-left', padding: '8px 15px'}
+});
+legend.add(ui.Label({value: 'LULC', style: {fontWeight: 'bold', fontSize: '18px'}}));
+
+var makeRow = function(color, name) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: color,
+      padding: '8px',
+      margin: '0 0 4px 0'
+    }
+  });
+  var description = ui.Label({
+    value: name,
+    style: {margin: '0 0 4px 6px'}
+  });
+  return ui.Panel({widgets: [colorBox, description], layout: ui.Panel.Layout.Flow('horizontal')});
+};
+
+var palette = ['#006400', '#228B22', '#7FFF00', '#483D8B', '#DAA520', '#B22222'];
+var names = ['Indigenous Forest', 'Exotic Forest', 'Mixed vegetation', 'Wetland', 'Open space', 'Built-up'];
+
+for (var i = 0; i < names.length; i++) {
+  legend.add(makeRow(palette[i], names[i]));
+}
+Map.add(legend);
+
+// ================= MAP TITLE =================
+var title = ui.Panel({style: {position: 'top-left', padding: '8px 15px'}});
+title.add(ui.Label({
+  value: 'KARURA FOREST 2000 LULC MAP',
+  style: {fontWeight: 'bold', fontSize: '18px'}
+}));
+Map.add(title);
+
+// ================= ACCURACY ASSESSMENT =================
+var test = classified.sampleRegions({
+  collection: training,
+  properties: [label],
+  scale: 30
+});
+var testConfusionMatrix = test.errorMatrix(label, 'classification');
+print('Confusion Matrix', testConfusionMatrix);
+print('Test Accuracy', testConfusionMatrix.accuracy());
+
+// ================= AREA BAR CHART =================
+var areaImage = ee.Image.pixelArea().addBands(classified);
+var areas = areaImage.reduceRegion({
+  reducer: ee.Reducer.sum().group({groupField: 1, groupName: 'Class'}),
+  geometry: geometry,
+  scale: 30,
+  maxPixels: 1e13
+});
+
+var classAreas = ee.List(areas.get('groups'));
+var areaChart = ui.Chart.array.values({
+  array: classAreas.map(function(item) {
+    return [ee.Dictionary(item).get('sum')];
+  }),
+  axis: 0,
+  xLabels: names
+})
+.setChartType('ColumnChart')
+.setOptions({
+  title: 'Area of Each LULC Class (sq meters)',
+  hAxis: {title: 'Class'},
+  vAxis: {title: 'Area (m²)'},
+  legend: 'none',
+  colors: palette
+});
+
+print(areaChart);
+
+// Export classified image to Google Drive
+Export.image.toDrive({
+  image: classified.clip(geometry),
+  description: 'Karura_LULC_2000',
+  folder: 'EarthEngineExports',
+  fileNamePrefix: 'Karura_LULC_2000',
+  region: geometry.geometry(),
+  scale: 30,
+  crs: 'EPSG:4326',
+  maxPixels: 1e13
+});
